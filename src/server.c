@@ -7,20 +7,19 @@
 #include <errno.h>
 #include <unistd.h>
 #include "commands/commands.h"
+#include <fcntl.h>
+#include <sys/epoll.h>
 
 #define BUFFER_SIZE 1024
+#define MAX_EVENTS 10
 
 int main() {
 	// Disable output buffering
 	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
 	
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	printf("Logs from your program will appear here!\n");
-
-	
-	
-	int server_fd, client_addr_len;
+	int server_fd;
+	socklen_t client_addr_len;
 	struct sockaddr_in client_addr;
 	
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -65,15 +64,25 @@ int main() {
 
 		printf("Client connected\n");
 
-		char buffer[BUFFER_SIZE] = {0};
-		ssize_t bytes_read = read(client_socket, buffer, BUFFER_SIZE);
+		while(1){
 
-		if (bytes_read > 0) {
+			char buffer[BUFFER_SIZE] = {0};
+			ssize_t bytes_read = read(client_socket, buffer, BUFFER_SIZE);
+
+			if (bytes_read <= 0) {
+				if (bytes_read == 0) {
+					printf("Client disconnected\n");
+				} else {
+					printf("Read error: %s\n", strerror(errno));
+				}
+				break;
+			}
+
 			printf("Received: %s\n", buffer);
 			const char* response = handle_ping();
 			send(client_socket, response, strlen(response), 0);
 		}
-
+		
 		close(client_socket);
 	}
 
