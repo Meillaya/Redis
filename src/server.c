@@ -9,83 +9,248 @@
 #include "commands/commands.h"
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include "protocol/resp.h"
+#include <ctype.h>
 
 #define BUFFER_SIZE 1024
-#define MAX_EVENTS 10
+#define MAX_EVENTS 1000
+#define MAX_ARGS 10
+
+/**
+ * Sets a file descriptor to non-blocking mode.
+ * Returns 0 on success, -1 on failure.
+ */
+int set_nonblocking(int fd) {
+    int flags, s;
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl F_GETFL");
+        return -1;
+    }
+
+    flags |= O_NONBLOCK;
+    s = fcntl(fd, F_SETFL, flags);
+    if (s == -1) {
+        perror("fcntl F_SETFL");
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * Handles a command by parsing input and dispatching to the appropriate handler.
+ * Returns the response string.
+ */
+Response handle_command(const char* input) {
+    int argc = 0;
+    char* argv[MAX_ARGS] = {0};
+    parse_resp(input, &argc, argv);
+
+    Response res;
+    if (argc > 0) {
+        // Convert command to uppercase for case-insensitive comparison
+        for(int i = 0; argv[0][i]; i++){
+            argv[0][i] = toupper((unsigned char)argv[0][i]);
+        }
+
+        if (strcmp(argv[0], "PING") == 0) {
+            res = handle_ping();
+        } else if (strcmp(argv[0], "ECHO") == 0 && argc > 1) {
+            res = handle_echo(argv[1]);
+        } else if (strcmp(argv[0], "SET") == 0 && argc > 2) {
+            res = handle_set(argv[1], argv[2]);
+        } else if (strcmp(argv[0], "GET") == 0 && argc > 1) {
+            res = handle_get(argv[1]);
+        } else {
+            res.response = "-ERR unknown command\r\n";
+            res.should_free = 0;
+        }
+    } else {
+        res.response = "-ERR unknown command\r\n";
+        res.should_free = 0;
+    }
+
+    // Free allocated memory for argv
+    for(int i = 0; i < argc; i++) {
+        free(argv[i]);
+    }
+
+    return res;
+}
 
 int main() {
-	// Disable output buffering
-	setbuf(stdout, NULL);
-	setbuf(stderr, NULL);
-	
-	int server_fd;
-	socklen_t client_addr_len;
-	struct sockaddr_in client_addr;
-	
-	server_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (server_fd == -1) {
-		printf("Socket creation failed: %s...\n", strerror(errno));
-		return 1;
-	}
-	
-	// Since the tester restarts your program quite often, setting SO_REUSEADDR
-	// ensures that we don't run into 'Address already in use' errors
-	int reuse = 1;
-	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-		printf("SO_REUSEADDR failed: %s \n", strerror(errno));
-		return 1;
-	}
-	
-	struct sockaddr_in serv_addr = { .sin_family = AF_INET ,
-									 .sin_port = htons(6379),
-									 .sin_addr = { htonl(INADDR_ANY) },
-									};
-	
-	if (bind(server_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0) {
-		printf("Bind failed: %s \n", strerror(errno));
-		return 1;
-	}
-	
-	int connection_backlog = 5;
-	if (listen(server_fd, connection_backlog) != 0) {
-		printf("Listen failed: %s \n", strerror(errno));
-		return 1;
-	}
-	
-	printf("Waiting for a client to connect...\n");
-	client_addr_len = sizeof(client_addr);
-	
-	while(1) {
-		int client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
-		if (client_socket < 0) {
-			printf("Accept failed: %s\n", strerror(errno));
-			continue;
-		}
+    // Disable output buffering
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
 
-		printf("Client connected\n");
+    int server_fd, epoll_fd;
+    struct sockaddr_in serv_addr, client_addr;
+    socklen_t client_addr_len;
+    struct epoll_event ev, events[MAX_EVENTS];
 
-		while(1){
+    // Create server socket
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) {
+        printf("Socket creation failed: %s...\n", strerror(errno));
+        return 1;
+    }
 
-			char buffer[BUFFER_SIZE] = {0};
-			ssize_t bytes_read = read(client_socket, buffer, BUFFER_SIZE);
+    // Allow address reuse
+    int reuse = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        printf("SO_REUSEADDR failed: %s \n", strerror(errno));
+        close(server_fd);
+        return 1;
+    }
 
-			if (bytes_read <= 0) {
-				if (bytes_read == 0) {
-					printf("Client disconnected\n");
-				} else {
-					printf("Read error: %s\n", strerror(errno));
-				}
-				break;
-			}
+    // Initialize server address structure
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(6379);
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-			printf("Received: %s\n", buffer);
-			const char* response = handle_ping();
-			send(client_socket, response, strlen(response), 0);
-		}
-		
-		close(client_socket);
-	}
+    // Bind socket to the specified address and port
+    if (bind(server_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0) {
+        printf("Bind failed: %s \n", strerror(errno));
+        close(server_fd);
+        return 1;
+    }
 
+    // Start listening for incoming connections
+    int connection_backlog = 5;
+    if (listen(server_fd, connection_backlog) != 0) {
+        printf("Listen failed: %s \n", strerror(errno));
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Waiting for clients to connect...\n");
+
+    // Create epoll instance
+    epoll_fd = epoll_create1(0);
+    if (epoll_fd == -1) {
+        perror("epoll_create1");
+        close(server_fd);
+        return 1;
+    }
+
+    // Make server socket non-blocking
+    if (set_nonblocking(server_fd) == -1) {
+        close(server_fd);
+        close(epoll_fd);
+        return 1;
+    }
+
+    // Add server_fd to epoll instance
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = server_fd;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) == -1){
+        perror("epoll_ctl: server_fd");
+        close(server_fd);
+        close(epoll_fd);
+        return 1;
+    }
+
+    // Event loop
+    while (1) {
+        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        if (nfds == -1) {
+            if (errno == EINTR) {
+                continue; // Interrupted by signal, retry
+            }
+            perror("epoll_wait");
+            break;
+        }
+
+        for (int n = 0; n < nfds; ++n) {
+            if (events[n].data.fd == server_fd) {
+                // Handle all incoming connections
+                while (1) {
+                    client_addr_len = sizeof(client_addr);
+                    int client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
+                    if (client_socket == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // No more incoming connections
+                            break;
+                        } else {
+                            perror("accept");
+                            break;
+                        }
+                    }
+
+                    // Make client socket non-blocking
+                    if (set_nonblocking(client_socket) == -1) {
+                        close(client_socket);
+                        continue;
+                    }
+
+                    // Add client socket to epoll instance
+                    ev.events = EPOLLIN | EPOLLET;
+                    ev.data.fd = client_socket;
+                    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_socket, &ev) == -1){
+                        perror("epoll_ctl: client_socket");
+                        close(client_socket);
+                        continue;
+                    }
+
+                    printf("New client connected (fd: %d)\n", client_socket);
+                }
+            } else {
+                // Handle data from client
+                int client_socket = events[n].data.fd;
+                int done = 0;
+
+                while (1) {
+                    char buffer[BUFFER_SIZE] = {0};
+                    ssize_t bytes_read = read(client_socket, buffer, sizeof(buffer) - 1);
+
+                    if (bytes_read == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // All data has been read
+                            break;
+                        }
+                        perror("read");
+                        done = 1;
+                        break;
+                    } else if (bytes_read == 0) {
+                        // Client disconnected
+                        done = 1;
+                        break;
+                    }
+
+                    // Null-terminate the received data
+                    buffer[bytes_read] = '\0';
+                    printf("Received from fd %d: %s\n", client_socket, buffer);
+
+                    // Handle the command and get the response
+                    Response response = handle_command(buffer);
+                    ssize_t bytes_sent = send(client_socket, response.response, strlen(response.response), 0);
+                    if (bytes_sent == -1) {
+                        perror("send");
+                        done = 1;
+                        break;
+                    }
+
+                    // Free the response if it was dynamically allocated
+                     if (response.should_free) {
+                        free((void*)response.response);
+                    }
+                }
+
+                if (done) {
+                    printf("Closing connection with fd %d\n", client_socket);
+                    if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, client_socket, NULL) == -1) {
+                        perror("epoll_ctl: EPOLL_CTL_DEL");
+                    }
+                    close(client_socket);
+                }
+            }
+        }
+    }
+
+    // Cleanup
     close(server_fd);
+    close(epoll_fd);
     return 0;
 }

@@ -2,7 +2,6 @@ CC := gcc
 CFLAGS := -Wall -Wextra -std=c11
 TARGET := /tmp/codecrafters-build-redis-c
 
-SRCS += src/server.c
 # Find all source files
 SRCS := $(shell find src -name '*.c')
 
