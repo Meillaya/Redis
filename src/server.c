@@ -7,15 +7,20 @@
 #include <errno.h>
 #include <unistd.h>
 #include "commands/commands.h"
+#include "commands/response.h"
+#include "protocol/resp.h"
+#include "utils/memory.h"
+#include "utils/time_utils.h"
 #include <fcntl.h>
 #include <sys/epoll.h>
-#include "protocol/resp.h"
 #include <ctype.h>
+#include <time.h>
+
 
 #define BUFFER_SIZE 1024
 #define MAX_EVENTS 1000
 #define MAX_ARGS 10
-
+#define CLEANUP_INTERVAL_SECONDS 60 
 /**
  * Sets a file descriptor to non-blocking mode.
  * Returns 0 on success, -1 on failure.
@@ -59,7 +64,7 @@ Response handle_command(const char* input) {
         } else if (strcmp(argv[0], "ECHO") == 0 && argc > 1) {
             res = handle_echo(argv[1]);
         } else if (strcmp(argv[0], "SET") == 0 && argc > 2) {
-            res = handle_set(argv[1], argv[2]);
+            res = handle_set(argc, argv);
         } else if (strcmp(argv[0], "GET") == 0 && argc > 1) {
             res = handle_get(argv[1]);
         } else {
@@ -125,6 +130,7 @@ int main() {
         return 1;
     }
 
+	init_store();
     printf("Waiting for clients to connect...\n");
 
     // Create epoll instance
@@ -152,9 +158,13 @@ int main() {
         return 1;
     }
 
+	time_t last_cleanup = time(NULL);
+    const int cleanup_interval_seconds = 60; // Adjust as needed
+
     // Event loop
     while (1) {
-        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        // Wait for events with a timeout to allow periodic cleanup
+        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 1000); // 1 second timeout
         if (nfds == -1) {
             if (errno == EINTR) {
                 continue; // Interrupted by signal, retry
@@ -233,7 +243,7 @@ int main() {
                     }
 
                     // Free the response if it was dynamically allocated
-                     if (response.should_free) {
+                    if (response.should_free) {
                         free((void*)response.response);
                     }
                 }
@@ -246,6 +256,31 @@ int main() {
                     close(client_socket);
                 }
             }
+        }
+
+        // Periodic cleanup of expired keys
+        time_t current_time = time(NULL);
+		
+		
+        if (difftime(current_time, last_cleanup) >= cleanup_interval_seconds) {
+            // Iterate through keyValueStore and remove expired keys
+            for(int i = 0; i < keyValueCount; ) {
+                if (keyValueStore[i].expiry != 0 && current_time_millis() > keyValueStore[i].expiry) {
+                    printf("Key '%s' has expired. Removing it.\n", keyValueStore[i].key);
+                    // Key has expired. Remove it.
+                    free(keyValueStore[i].key);
+                    free(keyValueStore[i].value);
+                    // Shift remaining keys
+                    for(int j = i; j < keyValueCount - 1; j++) {
+                        keyValueStore[j] = keyValueStore[j + 1];
+                    }
+                    keyValueCount--;
+                    // Do not increment i to check the new key at this index
+                } else {
+                    i++;
+                }
+            }
+            last_cleanup = current_time;
         }
     }
 
