@@ -22,7 +22,8 @@ Response handle_ping();
 Response handle_echo(const char* argument);
 Response handle_set(int argc, char** argv); 
 Response handle_get(const char* key);
-
+Response handle_config_get(int argc, char** argv);
+Response handle_keys(int argc, char** argv);
 // Initialize the key-value store
 void init_store();
 

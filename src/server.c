@@ -1,9 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <unistd.h>
 #include "commands/commands.h"
@@ -11,6 +13,7 @@
 #include "protocol/resp.h"
 #include "utils/memory.h"
 #include "utils/time_utils.h"
+#include "config/config.h"
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <ctype.h>
@@ -21,6 +24,10 @@
 #define MAX_EVENTS 1000
 #define MAX_ARGS 10
 #define CLEANUP_INTERVAL_SECONDS 60 
+#define DEFAULT_DIR "./"          // Default directory
+#define DEFAULT_DBFILENAME "dump.rdb" // Default RDB filename
+
+
 /**
  * Sets a file descriptor to non-blocking mode.
  * Returns 0 on success, -1 on failure.
@@ -47,6 +54,10 @@ int set_nonblocking(int fd) {
  * Handles a command by parsing input and dispatching to the appropriate handler.
  * Returns the response string.
  */
+/**
+ * Handles a command by parsing input and dispatching to the appropriate handler.
+ * Returns the response string.
+ */
 Response handle_command(const char* input) {
     int argc = 0;
     char* argv[MAX_ARGS] = {0};
@@ -67,6 +78,10 @@ Response handle_command(const char* input) {
             res = handle_set(argc, argv);
         } else if (strcmp(argv[0], "GET") == 0 && argc > 1) {
             res = handle_get(argv[1]);
+        } else if (strcmp(argv[0], "CONFIG") == 0 && argc >= 3) { 
+            res = handle_config_get(argc, argv);
+        } else if (strcmp(argv[0], "KEYS") == 0 && argc >= 2) {
+            res = handle_keys(argc, argv);
         } else {
             res.response = "-ERR unknown command\r\n";
             res.should_free = 0;
@@ -84,7 +99,7 @@ Response handle_command(const char* input) {
     return res;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     // Disable output buffering
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
@@ -93,6 +108,28 @@ int main() {
     struct sockaddr_in serv_addr, client_addr;
     socklen_t client_addr_len;
     struct epoll_event ev, events[MAX_EVENTS];
+
+
+	// Initialize default configurations
+    config_dir = (char *)strdup(DEFAULT_DIR);
+	config_dbfilename = (char *)strdup(DEFAULT_DBFILENAME);
+
+	// Parse command-line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
+            free(config_dir); // Free the default
+            config_dir = strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--dbfilename") == 0 && i + 1 < argc) {
+            free(config_dbfilename); // Free the default
+            config_dbfilename = strdup(argv[++i]);
+        } else {
+            fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
+            fprintf(stderr, "Usage: %s --dir <directory> --dbfilename <filename>\n", argv[0]);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+	init_store();
 
     // Create server socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -159,7 +196,7 @@ int main() {
     }
 
 	time_t last_cleanup = time(NULL);
-    const int cleanup_interval_seconds = 60; // Adjust as needed
+    const int cleanup_interval_seconds = CLEANUP_INTERVAL_SECONDS;
 
     // Event loop
     while (1) {

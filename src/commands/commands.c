@@ -6,6 +6,8 @@
 #include "commands.h"
 #include "../utils/memory.h"
 #include "../utils/time_utils.h"
+#include "../config/config.h"
+#include "../persistence/rdb.h"
 
 KeyValue keyValueStore[MAX_KEYS];
 int keyValueCount = 0;
@@ -13,6 +15,7 @@ int keyValueCount = 0;
 void init_store() {
     keyValueCount = 0;
     memset(keyValueStore, 0, sizeof(keyValueStore));
+    load_rdb(); // Load keys from RDB file
 }
 /**
  * Finds the index of a key in the keyValueStore.
@@ -26,6 +29,56 @@ int find_key(const char* key) {
     }
     return -1;
 }
+
+
+Response handle_keys(int argc, char** argv) {
+    Response res;
+
+    if (argc != 2) {
+        res.response = "-ERR wrong number of arguments for 'KEYS' command\r\n";
+        res.should_free = 0;
+        return res;
+    }
+
+    const char* pattern = argv[1];
+
+    // For this stage, we only handle the '*' pattern to return all keys
+    if (strcmp(pattern, "*") != 0) {
+        res.response = "-ERR unsupported pattern\r\n";
+        res.should_free = 0;
+        return res;
+    }
+
+    // Calculate the total number of matching keys
+    int matched_keys = keyValueCount;
+
+    // Calculate the size needed for the RESP array
+    // RESP array starts with *<number_of_elements>\r\n
+    // Each key is a bulk string: $<length>\r\n<key>\r\n
+    // Estimate the buffer size. For simplicity, allocate a buffer large enough.
+    // In a production environment, you'd calculate the exact size or use dynamic buffers.
+
+    // Start with the array header
+    // Assuming maximum 100 keys for buffer size estimation
+    int buffer_size = 4 + (matched_keys * (10 + 1024)); // Adjust as needed
+    char* buffer = safe_malloc(buffer_size);
+    int offset = 0;
+
+    // Write the RESP array header
+    offset += snprintf(buffer + offset, buffer_size - offset, "*%d\r\n", matched_keys);
+
+    // Append each key as a bulk string
+    for (int i = 0; i < matched_keys; i++) {
+        const char* key = keyValueStore[i].key;
+        int key_length = strlen(key);
+        offset += snprintf(buffer + offset, buffer_size - offset, "$%d\r\n%s\r\n", key_length, key);
+    }
+
+    res.response = buffer;
+    res.should_free = 1; // The buffer was dynamically allocated and should be freed
+    return res;
+}
+
 
 /**
  * Handles the SET command.
@@ -146,6 +199,65 @@ Response handle_get(const char* key) {
     return res;
 }
 
+/**
+ * Handles the CONFIG GET command.
+ * Syntax: CONFIG GET parameter
+ * Response: RESP array containing parameter name and its value
+ */
+Response handle_config_get(int argc, char** argv) {
+    Response res;
+
+    if (argc != 3) {
+        res.response = "-ERR wrong number of arguments for 'CONFIG GET' command\r\n";
+        res.should_free = 0;
+        return res;
+    }
+
+    const char* parameter = argv[2];
+    char* value = NULL;
+
+    if (strcasecmp(parameter, "dir") == 0) {
+        value = config_dir;
+    } else if (strcasecmp(parameter, "dbfilename") == 0) {
+        value = config_dbfilename;
+    } else {
+        res.response = "-ERR unknown configuration parameter\r\n";
+        res.should_free = 0;
+        return res;
+    }
+
+    int key_len = strlen(parameter);
+    int value_len = strlen(value);
+
+    // Calculate the total response size
+    int response_size = 1024; // Allocate a sufficiently large buffer
+
+    char* buffer = safe_malloc(response_size);
+
+    // Build the RESP array
+    int written = snprintf(buffer, response_size,
+        "*2\r\n"
+        "$%d\r\n%s\r\n"
+        "$%d\r\n%s\r\n",
+        key_len, parameter,
+        value_len, value);
+
+    if (written >= response_size) {
+        // Buffer wasn't large enough, reallocate and try again
+        response_size = written + 1;
+        buffer = realloc(buffer, response_size);
+        snprintf(buffer, response_size,
+            "*2\r\n"
+            "$%d\r\n%s\r\n"
+            "$%d\r\n%s\r\n",
+            key_len, parameter,
+            value_len, value);
+    }
+
+    res.response = buffer;
+    res.should_free = 1;
+    return res;
+}
 
 /**
  * Handles the PING command.
