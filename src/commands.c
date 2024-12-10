@@ -4,10 +4,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "commands.h"
-#include "../utils/memory.h"
-#include "../utils/time_utils.h"
-#include "../config/config.h"
-#include "../persistence/rdb.h"
+#include "memory.h"
+#include "time_utils.h"
+#include "config.h"
+#include "rdb.h"
 
 KeyValue keyValueStore[MAX_KEYS];
 int keyValueCount = 0;
@@ -49,33 +49,46 @@ Response handle_keys(int argc, char** argv) {
         return res;
     }
 
-    // Calculate the total number of matching keys
-    int matched_keys = keyValueCount;
+    // Count valid keys first
+    int valid_key_count = 0;
+    for (int i = 0; i < keyValueCount; i++) {
+        if (keyValueStore[i].key != NULL) {
+            valid_key_count++;
+        }
+    }
 
-    // Calculate the size needed for the RESP array
-    // RESP array starts with *<number_of_elements>\r\n
-    // Each key is a bulk string: $<length>\r\n<key>\r\n
-    // Estimate the buffer size. For simplicity, allocate a buffer large enough.
-    // In a production environment, you'd calculate the exact size or use dynamic buffers.
+    printf("DEBUG: KEYS command - Found %d valid keys out of %d total\n", valid_key_count, keyValueCount);
 
-    // Start with the array header
-    // Assuming maximum 100 keys for buffer size estimation
-    int buffer_size = 4 + (matched_keys * (10 + 1024)); // Adjust as needed
+    // Calculate buffer size needed for RESP array
+    int buffer_size = 32; // Start with space for array header
+    for (int i = 0; i < keyValueCount; i++) {
+        const char* key = keyValueStore[i].key;
+        if (!key) continue;  // Skip NULL keys
+        int key_length = strlen(key);
+        printf("DEBUG: Key %d: '%s' (length: %d)\n", i, key, key_length);
+        // Add space for $<length>\r\n<key>\r\n
+        buffer_size += 32 + key_length;
+    }
+
     char* buffer = safe_malloc(buffer_size);
     int offset = 0;
 
-    // Write the RESP array header
-    offset += snprintf(buffer + offset, buffer_size - offset, "*%d\r\n", matched_keys);
+    // Write array header with valid key count
+    offset += snprintf(buffer + offset, buffer_size - offset, "*%d\r\n", valid_key_count);
 
-    // Append each key as a bulk string
-    for (int i = 0; i < matched_keys; i++) {
+    // Write each key as a bulk string
+    for (int i = 0; i < keyValueCount; i++) {
         const char* key = keyValueStore[i].key;
+        if (!key) continue;  // Skip NULL keys
         int key_length = strlen(key);
-        offset += snprintf(buffer + offset, buffer_size - offset, "$%d\r\n%s\r\n", key_length, key);
+        offset += snprintf(buffer + offset, buffer_size - offset, "$%d\r\n%s\r\n", 
+                         key_length, key);
     }
 
+    printf("DEBUG: KEYS response: '%s'\n", buffer);
+
     res.response = buffer;
-    res.should_free = 1; // The buffer was dynamically allocated and should be freed
+    res.should_free = 1;
     return res;
 }
 

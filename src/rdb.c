@@ -3,10 +3,10 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
-#include "../commands/commands.h"
-#include "../utils/memory.h"
-#include "../utils/time_utils.h"
-#include "../config/config.h"
+#include "commands.h"
+#include "memory.h"
+#include "time_utils.h"
+#include "config.h"
 
 /**
  * Load a single key from the RDB file and add it to the keyValueStore.
@@ -50,7 +50,8 @@ int load_rdb() {
         }
 
         switch (opcode) {
-            case 0xFA: { // Metadata Subsection
+            case 0xFA: { 
+                // Metadata Subsection
                 // Read metadata length and value
                 // Metadata name
                 // Since metadata name and value are string encoded, parse them

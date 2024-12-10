@@ -8,12 +8,12 @@
 #include <strings.h>
 #include <errno.h>
 #include <unistd.h>
-#include "commands/commands.h"
-#include "commands/response.h"
-#include "protocol/resp.h"
-#include "utils/memory.h"
-#include "utils/time_utils.h"
-#include "config/config.h"
+#include "commands.h"
+#include "response.h"
+#include "resp.h"
+#include "memory.h"
+#include "time_utils.h"
+#include "config.h"
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <ctype.h>
@@ -167,7 +167,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-	init_store();
     printf("Waiting for clients to connect...\n");
 
     // Create epoll instance
