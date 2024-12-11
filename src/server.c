@@ -137,7 +137,8 @@ int main(int argc, char* argv[]) {
         printf("Socket creation failed: %s...\n", strerror(errno));
         return 1;
     }
-
+   
+    printf("DEBUG: Server socket created\n");
     // Allow address reuse
     int reuse = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
@@ -158,7 +159,7 @@ int main(int argc, char* argv[]) {
         close(server_fd);
         return 1;
     }
-
+    printf("DEBUG: Server bound to port 6379\n");
     // Start listening for incoming connections
     int connection_backlog = 5;
     if (listen(server_fd, connection_backlog) != 0) {
@@ -166,7 +167,9 @@ int main(int argc, char* argv[]) {
         close(server_fd);
         return 1;
     }
-
+    
+    printf("DEBUG: Server listening on port 6379\n");
+    
     printf("Waiting for clients to connect...\n");
 
     // Create epoll instance
