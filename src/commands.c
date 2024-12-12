@@ -15,7 +15,7 @@ int keyValueCount = 0;
 void init_store() {
     keyValueCount = 0;
     memset(keyValueStore, 0, sizeof(keyValueStore));
-    load_rdb(); // Load keys from RDB file
+    load_rdb();
 }
 /**
  * Finds the index of a key in the keyValueStore.
@@ -28,6 +28,68 @@ int find_key(const char* key) {
         }
     }
     return -1;
+}
+
+
+void set_key_with_expiry(const char* key, const char* value, long long expiry) {
+    int index = find_key(key);
+    if (index != -1) {
+        free(keyValueStore[index].value);
+        keyValueStore[index].value = safe_malloc(strlen(value) + 1);
+        strcpy(keyValueStore[index].value, value);
+        keyValueStore[index].expiry = expiry;
+    } else {
+        if (keyValueCount < MAX_KEYS) {
+            keyValueStore[keyValueCount].key = safe_malloc(strlen(key) + 1);
+            strcpy(keyValueStore[keyValueCount].key, key);
+            keyValueStore[keyValueCount].value = safe_malloc(strlen(value) + 1);
+            strcpy(keyValueStore[keyValueCount].value, value);
+            keyValueStore[keyValueCount].expiry = expiry;
+            keyValueCount++;
+        }
+    }
+}
+
+void set_key(const char* key, const char* value) {
+    int index = find_key(key);
+    if (index != -1) {
+        free(keyValueStore[index].value);
+        keyValueStore[index].value = safe_malloc(strlen(value) + 1);
+        strcpy(keyValueStore[index].value, value);
+        keyValueStore[index].expiry = 0;
+    } else {
+        if (keyValueCount < MAX_KEYS) {
+            keyValueStore[keyValueCount].key = safe_malloc(strlen(key) + 1);
+            strcpy(keyValueStore[keyValueCount].key, key);
+            keyValueStore[keyValueCount].value = safe_malloc(strlen(value) + 1);
+            strcpy(keyValueStore[keyValueCount].value, value);
+            keyValueStore[keyValueCount].expiry = 0;
+            keyValueCount++;
+        }
+    }
+}
+
+char* get_key(const char* key) {
+    int index = find_key(key);
+    if (index == -1) {
+        return NULL;
+    }
+
+    // Check if key has expired
+    if (keyValueStore[index].expiry != 0 && 
+        keyValueStore[index].expiry < current_time_millis()) {
+        // Key has expired, remove it
+        free(keyValueStore[index].key);
+        free(keyValueStore[index].value);
+        // Shift remaining keys
+        for(int j = index; j < keyValueCount - 1; j++) {
+            keyValueStore[j] = keyValueStore[j + 1];
+        }
+        keyValueCount--;
+        return NULL;
+    }
+
+    return keyValueStore[index].value;
 }
 
 
@@ -171,46 +233,21 @@ Response handle_set(int argc, char** argv) {
  */
 Response handle_get(const char* key) {
     Response res;
-    if (key == NULL) {
-        res.response = "-ERR wrong number of arguments for 'GET' command\r\n";
-        res.should_free = 0;
-        return res;
-    }
-
-    int index = find_key(key);
-    if (index == -1) {
-        // Key does not exist, return null bulk string
+    char* value = get_key(key);
+    
+    if (value == NULL) {
         res.response = "$-1\r\n";
         res.should_free = 0;
     } else {
-        // Check if the key has an expiry and if it has expired
-        if (keyValueStore[index].expiry != 0 && current_time_millis() > keyValueStore[index].expiry) {
-            // Key has expired. Remove it from the store.
-            free(keyValueStore[index].key);
-            free(keyValueStore[index].value);
-            // Shift the remaining keys
-            for(int i = index; i < keyValueCount - 1; i++) {
-                keyValueStore[i] = keyValueStore[i + 1];
-            }
-            keyValueCount--;
-
-            // Return null bulk string
-            res.response = "$-1\r\n";
-            res.should_free = 0;
-        } else {
-            const char* value = keyValueStore[index].value;
-            int len = strlen(value);
-            // Calculate the required buffer size: $<len>\r\n<value>\r\n
-            // Max len of integer in string is ~10 digits
-            int response_size = 1 + 20 + 2 + len + 2; // Increased buffer for larger lengths
-            char* buffer = safe_malloc(response_size);
-            snprintf(buffer, response_size, "$%d\r\n%s\r\n", len, value);
-            res.response = buffer;
-            res.should_free = 1;
-        }
+        int len = strlen(value);
+        char* buffer = safe_malloc(len + 32);  // Extra space for RESP formatting
+        sprintf(buffer, "$%d\r\n%s\r\n", len, value);
+        res.response = buffer;
+        res.should_free = 1;
     }
     return res;
 }
+
 
 /**
  * Handles the CONFIG GET command.

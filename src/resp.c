@@ -1,4 +1,4 @@
-// src/protocol/resp.c
+// src/resp.c
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
