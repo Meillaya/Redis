@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -Wall -Wextra -std=c11
+CFLAGS := -Wall -Wextra -std=c11 
 TARGET := /tmp/codecrafters-build-redis-c
 
 # Find all source files
